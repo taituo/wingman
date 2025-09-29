@@ -69,8 +69,19 @@ agent_pane_exists() {
 send_to_agent() {
   local text="${1//$'\n'/ }"
   if tmux has-session -t "$SESSION" 2>/dev/null && agent_pane_exists; then
+    if [[ "$(tmux display-message -p -t "$AGENT_PANE" '#{pane_in_mode}')" == "1" ]]; then
+      tmux send-keys -t "$AGENT_PANE" q
+      sleep 0.02
+    fi
+
     tmux send-keys -t "$AGENT_PANE" -l -- "$text"
+    sleep 0.05
+
     tmux send-keys -t "$AGENT_PANE" C-j
+    sleep 0.03
+    tmux send-keys -t "$AGENT_PANE" -l -- $'\r\n'
+    sleep 0.03
+    tmux send-keys -t "$AGENT_PANE" KPEnter
   else
     log_status error "Cannot reach agent pane ($AGENT_PANE). Message skipped: $text"
   fi
