@@ -70,7 +70,7 @@ send_to_agent() {
   local text="${1//$'\n'/ }"
   if tmux has-session -t "$SESSION" 2>/dev/null && agent_pane_exists; then
     tmux send-keys -t "$AGENT_PANE" -l -- "$text"
-    tmux send-keys -t "$AGENT_PANE" Enter
+    tmux send-keys -t "$AGENT_PANE" C-j
   else
     log_status error "Cannot reach agent pane ($AGENT_PANE). Message skipped: $text"
   fi
