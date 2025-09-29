@@ -5,9 +5,10 @@ set -euo pipefail
 WORKSPACE="${WORKSPACE:-}"
 LOG_FILE="${LOG_FILE:-}"
 SESSION="${SESSION:-}"
-AGENT_PANE="${AGENT_PANE:-${SESSION}:0.1}"
+AGENT_PANE="${AGENT_PANE:-${SESSION}:1.0}"
 ACTIVITY_LOG="$WORKSPACE/capcom.log"
 LAST_LINE_FILE="$WORKSPACE/.capcom_last_line"
+LOG_ROTATOR_PID=""
 
 if [[ -z "$WORKSPACE" || -z "$LOG_FILE" || -z "$SESSION" ]]; then
   echo "You probably want to start ./fly.sh instead"
@@ -62,6 +63,29 @@ log_status() {
   print_debug "$level" "$message"
 }
 
+start_log_rotation() {
+  if [[ -z "$LOG_FILE" ]]; then
+    return
+  fi
+
+  (
+    while true; do
+      sleep 60
+      if [[ -f "$LOG_FILE" ]]; then
+        local tmp="$LOG_FILE.tmp"
+        if tail -n 2000 "$LOG_FILE" >"$tmp" 2>/dev/null; then
+          mv "$tmp" "$LOG_FILE"
+        else
+          rm -f "$tmp"
+        fi
+      fi
+    done
+  ) &
+  LOG_ROTATOR_PID=$!
+
+  trap 'if [[ -n "${LOG_ROTATOR_PID:-}" ]]; then kill "${LOG_ROTATOR_PID}" 2>/dev/null || true; fi' EXIT
+}
+
 agent_pane_exists() {
   tmux list-panes -t "$AGENT_PANE" >/dev/null 2>&1
 }
@@ -85,6 +109,32 @@ send_to_agent() {
   else
     log_status error "Cannot reach agent pane ($AGENT_PANE). Message skipped: $text"
   fi
+}
+
+compose_agent_prompt() {
+  local trigger="$1"
+  local request="$2"
+  local context_start="$3"
+  local current_line="$4"
+  local friendly_prefix
+
+  case "$trigger" in
+    askhelp|test1|test2)
+      friendly_prefix="Friendly Wingman here—offer supportive guidance and encouragement."
+      ;;
+    askagent)
+      friendly_prefix="Wingman analysis mode: highlight potential pitfalls and next steps clearly."
+      ;;
+    q)
+      friendly_prefix="Wingman quick assist: deliver concise, actionable insight promptly."
+      ;;
+    *)
+      friendly_prefix="Wingman notice: respond helpfully."
+      ;;
+  esac
+
+  printf '%s Trigger #%s spotted in cli.log at line %s. Review %s starting from line %s and respond to the teammate message: %s' \
+    "$friendly_prefix" "$trigger" "$current_line" "$LOG_FILE" "$context_start" "$request"
 }
 
 load_last_line() {
@@ -111,6 +161,7 @@ This workspace contains:
 Hashtag triggers in `cli.log`:
 - `#q <message>` — forward to active assistant
 - `#askagent <message>` / `#askhelp <message>` — request detailed support
+- `#test1 <message>` / `#test2 <message>` — diagnostics for friendly feedback loops
 - `#changeagent <name>` — switch assistant (`codex`, `q`, `gemini`, `droid`)
 
 Capcom forwards context to the active agent and records activity here.
@@ -228,6 +279,7 @@ handle_change_agent() {
 initialize_capcom() {
   print_debug info "Capcom console ready"
   setup_workspace
+  start_log_rotation
   wait_for_log
   detect_agents
   select_default_agent
@@ -251,19 +303,22 @@ monitor_and_poke() {
   tail -n "+$((LAST_LINE + 1))" -F "$LOG_FILE" 2>/dev/null | while IFS= read -r line; do
     LAST_LINE=$((LAST_LINE + 1))
     save_last_line "$LAST_LINE"
-    log_event "CLI[$LAST_LINE]: $line"
 
-    if [[ "$line" == "[MENU]"* ]]; then
+    local clean_line="${line//$'\r'/}"
+    clean_line="${clean_line%$'\n'}"
+    log_event "CLI[$LAST_LINE]: $clean_line"
+
+    if [[ "$clean_line" == "[MENU]"* ]]; then
       continue
     fi
 
-    if [[ "$line" =~ \#changeagent[[:space:]]+([A-Za-z0-9_-]+) ]]; then
+    if [[ "$clean_line" =~ \#changeagent[[:space:]]+([A-Za-z0-9_-]+) ]]; then
       log_status info "Detected #changeagent request for '${BASH_REMATCH[1]}'"
       handle_change_agent "${BASH_REMATCH[1]}"
       continue
     fi
 
-    if [[ "$line" =~ \#(q|askagent|askhelp)[[:space:]]*(.*) ]]; then
+    if [[ "$clean_line" =~ \#(q|askagent|askhelp|test1|test2)[[:space:]]*(.*) ]]; then
       local trigger="${BASH_REMATCH[1]}"
       local request="${BASH_REMATCH[2]}"
       request="${request#"${request%%[![:space:]]*}"}"
@@ -274,8 +329,9 @@ monitor_and_poke() {
 
       local context_start=$(( LAST_LINE > 200 ? LAST_LINE - 200 : 1 ))
       log_status info "Forwarding #$trigger request from line $LAST_LINE"
-
-      send_to_agent "Team leader needs your help (agent: ${CURRENT_AGENT:-unknown}). Trigger: #$trigger at cli.log line $LAST_LINE. Review $LOG_FILE from line $context_start for context. Request: $request"
+      local prompt
+      prompt=$(compose_agent_prompt "$trigger" "$request" "$context_start" "$LAST_LINE")
+      send_to_agent "$prompt"
       log_event "Poked agent '$CURRENT_AGENT' for #$trigger (line $LAST_LINE)"
     fi
   done
