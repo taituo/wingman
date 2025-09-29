@@ -17,9 +17,9 @@ usage() {
 Usage: $0 [start|stop|status]
 
 Creates tmux session with:
-- Window 0: CLI (your commands + logging)
-- Window 1: Discussion agent shell (managed by Capcom)
-- Window 2: Capcom debug console
+- Window 0 pane 0: CLI (your commands + logging)
+- Window 0 pane 1: Discussion agent shell (managed by Capcom)
+- Window 1: Capcom debug console
 
 Use hashtags in CLI (e.g. "#q analyze this error") to forward context to the active agent.
 EOF
@@ -45,22 +45,22 @@ start_session() {
   touch "$LOG_FILE"
 
   # Create session with CLI pane
-  tmux new-session -d -s "$SESSION" -n "CLI"
+  tmux new-session -d -s "$SESSION" -n "Wingman"
 
-  # CLI window with logging
+  # CLI pane with logging (left)
   tmux select-pane -t "$SESSION":0.0 -T "CLI"
   tmux send-keys -t "$SESSION":0.0 "script -qaf $LOG_FILE" C-m
 
-  # Discussion window (agent shell managed by Capcom)
-  tmux new-window -t "$SESSION" -n "Discussion"
-  tmux select-pane -t "$SESSION":1.0 -T "Discussion"
-  tmux send-keys -t "$SESSION":1.0 "cd '$WORKSPACE'" C-m
-  tmux send-keys -t "$SESSION":1.0 "echo 'Discussion agent pane ready for Capcom.'" C-m
+  # Discussion pane (right) for agent responses
+  tmux split-window -h -t "$SESSION":0
+  tmux select-pane -t "$SESSION":0.1 -T "Discussion"
+  tmux send-keys -t "$SESSION":0.1 "cd '$WORKSPACE'" C-m
+  tmux send-keys -t "$SESSION":0.1 "echo 'Discussion agent pane ready for Capcom.'" C-m
 
   # Create dedicated Capcom window with debug view
   PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   tmux new-window -t "$SESSION" -n "Capcom"
-  tmux send-keys -t "$SESSION":2 "cd '$PROJECT_ROOT' && WORKSPACE='$WORKSPACE' LOG_FILE='$LOG_FILE' SESSION='$SESSION' AGENT_PANE='$SESSION:1.0' ./capcom.sh" C-m
+  tmux send-keys -t "$SESSION":1 "cd '$PROJECT_ROOT' && WORKSPACE='$WORKSPACE' LOG_FILE='$LOG_FILE' SESSION='$SESSION' AGENT_PANE='$SESSION:0.1' ./capcom.sh" C-m
   tmux select-window -t "$SESSION":0
 
   echo "Wingman started: CLI | Discussion"

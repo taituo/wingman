@@ -5,10 +5,9 @@ set -euo pipefail
 WORKSPACE="${WORKSPACE:-}"
 LOG_FILE="${LOG_FILE:-}"
 SESSION="${SESSION:-}"
-AGENT_PANE="${AGENT_PANE:-${SESSION}:1.0}"
+AGENT_PANE="${AGENT_PANE:-${SESSION}:0.1}"
 ACTIVITY_LOG="$WORKSPACE/capcom.log"
 LAST_LINE_FILE="$WORKSPACE/.capcom_last_line"
-LOG_ROTATOR_PID=""
 
 if [[ -z "$WORKSPACE" || -z "$LOG_FILE" || -z "$SESSION" ]]; then
   echo "You probably want to start ./fly.sh instead"
@@ -61,29 +60,6 @@ log_status() {
   local message="$*"
   log_event "[$level] $message"
   print_debug "$level" "$message"
-}
-
-start_log_rotation() {
-  if [[ -z "$LOG_FILE" ]]; then
-    return
-  fi
-
-  (
-    while true; do
-      sleep 60
-      if [[ -f "$LOG_FILE" ]]; then
-        local tmp="$LOG_FILE.tmp"
-        if tail -n 2000 "$LOG_FILE" >"$tmp" 2>/dev/null; then
-          mv "$tmp" "$LOG_FILE"
-        else
-          rm -f "$tmp"
-        fi
-      fi
-    done
-  ) &
-  LOG_ROTATOR_PID=$!
-
-  trap 'if [[ -n "${LOG_ROTATOR_PID:-}" ]]; then kill "${LOG_ROTATOR_PID}" 2>/dev/null || true; fi' EXIT
 }
 
 agent_pane_exists() {
@@ -279,7 +255,6 @@ handle_change_agent() {
 initialize_capcom() {
   print_debug info "Capcom console ready"
   setup_workspace
-  start_log_rotation
   wait_for_log
   detect_agents
   select_default_agent
@@ -306,19 +281,21 @@ monitor_and_poke() {
 
     local clean_line="${line//$'\r'/}"
     clean_line="${clean_line%$'\n'}"
-    log_event "CLI[$LAST_LINE]: $clean_line"
+    local trimmed="${clean_line#"${clean_line%%[![:space:]]*}"}"
+    trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+    log_event "CLI[$LAST_LINE]: $trimmed"
 
-    if [[ "$clean_line" == "[MENU]"* ]]; then
+    if [[ "$trimmed" == "[MENU]"* ]]; then
       continue
     fi
 
-    if [[ "$clean_line" =~ \#changeagent[[:space:]]+([A-Za-z0-9_-]+) ]]; then
+    if [[ "$trimmed" =~ ^#changeagent[[:space:]]+([A-Za-z0-9_-]+) ]]; then
       log_status info "Detected #changeagent request for '${BASH_REMATCH[1]}'"
       handle_change_agent "${BASH_REMATCH[1]}"
       continue
     fi
 
-    if [[ "$clean_line" =~ \#(q|askagent|askhelp|test1|test2)[[:space:]]*(.*) ]]; then
+    if [[ "$trimmed" =~ ^#(q|askagent|askhelp|test1|test2)[[:space:]]*(.*)$ ]]; then
       local trigger="${BASH_REMATCH[1]}"
       local request="${BASH_REMATCH[2]}"
       request="${request#"${request%%[![:space:]]*}"}"
