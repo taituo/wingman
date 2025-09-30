@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# wingman: tmux session with CLI, discussion agent, and Capcom monitor
+# wingman: tmux session with CLI, notifications, agent eye, and Capcom monitor
+HOME_DIR="${HOME:-/root}"
 SESSION="${SESSION:-wingman}"
 WORKSPACE="${WORKSPACE:-}"
 LOG_FILE="${LOG_FILE:-}"
@@ -17,9 +18,10 @@ usage() {
 Usage: $0 [start|stop|status]
 
 Creates tmux session with:
-- Window 0 pane 0: CLI (your commands + logging)
-- Window 0 pane 1: Discussion agent shell (managed by Capcom)
-- Window 1: Capcom debug console
+- Window 0 pane 0 (CLI): your shell with transcript logging
+- Window 0 pane 1 (Notifications): tails friendly updates from Capcom
+- Window 1 pane 0 (Eye): agent shell (Codex/Q/Droid on demand)
+- Window 1 pane 1 (Capcom): Capcom control console
 
 Use hashtags in CLI (e.g. "#q analyze this error") to forward context to the active agent.
 EOF
@@ -38,37 +40,59 @@ start_session() {
 
   # Use workspace from environment or create default
   if [[ -z "$WORKSPACE" ]]; then
-    WORKSPACE="$HOME/.wingman/$(date +%Y%m%d_%H%M%S)"
-    mkdir -p "$WORKSPACE"
+    WORKSPACE="$HOME_DIR/.wingman/$(date +%Y%m%d_%H%M%S)"
   fi
+  mkdir -p "$WORKSPACE"
   LOG_FILE="$WORKSPACE/cli.log"
   touch "$LOG_FILE"
+
+  PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  TMUX_ARCHIVE_ROOT="${TMUX_ARCHIVE_ROOT:-$HOME_DIR/tmux}"
+  SESSION_ARCHIVE="$TMUX_ARCHIVE_ROOT/$SESSION"
+  NOTIFICATION_LOG="$SESSION_ARCHIVE/notifications.log"
+  mkdir -p "$SESSION_ARCHIVE"
+  : >"$NOTIFICATION_LOG"
 
   # Create session with CLI pane
   tmux new-session -d -s "$SESSION" -n "Wingman"
 
-  # CLI pane with logging (left)
+  # Window 0: CLI + Notifications
   tmux select-pane -t "$SESSION":0.0 -T "CLI"
   tmux send-keys -t "$SESSION":0.0 "script -qaf $LOG_FILE" C-m
 
-  # Discussion pane (right) for agent responses
   tmux split-window -h -t "$SESSION":0
-  tmux select-pane -t "$SESSION":0.1 -T "Discussion"
-  tmux send-keys -t "$SESSION":0.1 "cd '$WORKSPACE'" C-m
-  tmux send-keys -t "$SESSION":0.1 "echo 'Discussion agent pane ready for Capcom.'" C-m
+  tmux select-pane -t "$SESSION":0.1 -T "Notifications"
+  tmux send-keys -t "$SESSION":0.1 "mkdir -p '$SESSION_ARCHIVE' && tail -n0 -F '$NOTIFICATION_LOG'" C-m
 
-  # Create dedicated Capcom window with debug view
-  PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  tmux new-window -t "$SESSION" -n "Capcom"
-  tmux send-keys -t "$SESSION":1 "cd '$PROJECT_ROOT' && WORKSPACE='$WORKSPACE' LOG_FILE='$LOG_FILE' SESSION='$SESSION' AGENT_PANE='$SESSION:0.1' ./capcom.sh" C-m
+  # Window 1: Eye + Capcom
+  tmux new-window -t "$SESSION" -n "Agents"
+  tmux select-pane -t "$SESSION":1.0 -T "Eye"
+  tmux send-keys -t "$SESSION":1.0 "cd '$WORKSPACE'" C-m
+  tmux send-keys -t "$SESSION":1.0 "echo 'Launch Codex/Q/Droid here when needed (e.g. via tmux keybind or #capcom help codex).'" C-m
+
+  tmux split-window -v -t "$SESSION":1
+  tmux select-pane -t "$SESSION":1.1 -T "Capcom"
+  tmux send-keys -t "$SESSION":1.1 "cd '$PROJECT_ROOT' && \
+    WORKSPACE='$WORKSPACE' \
+    LOG_FILE='$LOG_FILE' \
+    SESSION='$SESSION' \
+    AGENT_PANE='$SESSION:1.0' \
+    NOTIFICATION_LOG='$NOTIFICATION_LOG' \
+    TMUX_ARCHIVE_ROOT='$TMUX_ARCHIVE_ROOT' \
+    PANE_LOGGER='$PROJECT_ROOT/pane_logger.sh' \
+    ./capcom.sh" C-m
   tmux select-window -t "$SESSION":0
 
-  echo "Wingman started: CLI | Discussion"
+  echo "Wingman started: CLI | Notifications"
   echo "Workspace: $WORKSPACE"
   echo "Type '#q <message>' in CLI to forward to the active agent"
 
-  # Auto-attach to the session
-  tmux attach -t "$SESSION"
+  # Auto-attach unless suppressed
+  if [[ -z "${NO_ATTACH:-}" ]]; then
+    tmux attach -t "$SESSION"
+  else
+    tmux display-message -t "$SESSION" "Wingman session ready (NO_ATTACH set)."
+  fi
 }
 
 stop_session() {
